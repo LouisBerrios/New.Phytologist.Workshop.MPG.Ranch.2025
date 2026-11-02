@@ -1,246 +1,908 @@
-### Fig. 1, New Phytologist In-situ Viewpoint Paper ###
+### Figure 1 | New Phytologist Montana Workshop ###
+# By Louis Berrios | 11.02.2026
 
 library(dplyr)
 library(tidyr)
+library(stringr)
 library(ggplot2)
 library(patchwork)
 
-MF <- read.csv("Final.NP.MFF.10.22.26_LB+YL.csv")
-MF2 <- subset(MF, Inclusion !="No") ## this accounts for the 'Yes?' (MAYBE)
+# --------------------------------------------------
+# 1. Read data and define labels
+# --------------------------------------------------
 
-# Topic names, in the same order as your schematic
+MF <- read.csv(
+  "NP.Data.TEMP.Broad.Manipulation.Type.Revised+LB+YL.csv"
+)
+
+MF2 <- MF %>%
+  filter(Inclusion != "No")
+
 category_labels <- c(
-  "Resource.Transfer"         = "Resource Transfer\nBetween Symbionts",
-  "Life.History"              = "Fungal Life History\nStrategies",
-  "Hyposphere.Interactions"   = "Hyphosphere\nInteractions",
-  "Soil.Carbon.Dynamics"      = "Soil Carbon\nDynamics",
-  "Non.Resource.Interactions" = "Non-Resource\nInteractions"
+  "Resource.Transfer" =
+    "Resource Transfer\nBetween Symbionts",
+  "Life.History" =
+    "Fungal Life History\nStrategies",
+  "Hyphosphere.Interactions" =
+    "Hyphosphere\nInteractions",
+  "Soil.Carbon.Dynamics" =
+    "Soil Carbon\nDynamics",
+  "Non.Resource.Interactions" =
+    "Non-Resource\nInteractions"
 )
 
 category_levels <- unname(category_labels)
 
-location_levels <- c(
-  "In-situ", "Ex-situ", "In-situ + Ex-situ", "In-silico"
+fungal_levels <- c("AM Fungi", "EcM Fungi")
+
+function_levels <- c(
+  "Realized Function",
+  "Functional Potential"
 )
 
-function_levels <- c("Functional potential", "Realized function")
+location_levels <- c("In-situ", "Ex-situ")
 
-# Standardize punctuation, spacing, and capitalization
+location_colors <- c(
+  "In-situ" = "green4",
+  "Ex-situ" = "dodgerblue4"
+)
+
+location_shapes <- c(
+  "In-situ" = 15,
+  "Ex-situ" = 16
+)
+
+bin_labels <- c(
+  "1987–1999",
+  "2000–2012",
+  "2013–2026"
+)
+
+manipulation_levels <- c(
+  "Plant manipulations",
+  "Fungal manipulations/isolations",
+  "Environmental manipulations",
+  "Surveys"
+)
+
 clean_label <- function(x) {
-  x <- gsub("[._-]", " ", as.character(x))
-  tolower(trimws(gsub("\\s+", " ", x)))
+  x <- tolower(as.character(x))
+  x <- gsub("[._-]", " ", x)
+  trimws(gsub("\\s+", " ", x))
 }
 
-study_data <- MF2 %>%
+# --------------------------------------------------
+# 2. Standardize study data
+# --------------------------------------------------
+
+study_data <- MF2
+
+if (
+  "Hyposphere.Interactions" %in% names(study_data) &&
+  !"Hyphosphere.Interactions" %in% names(study_data)
+) {
+  study_data <- study_data %>%
+    dplyr::rename(
+      Hyphosphere.Interactions = Hyposphere.Interactions
+    )
+}
+
+study_data <- study_data %>%
   mutate(
-    Year = suppressWarnings(as.integer(as.character(Publication.Year))),
-    location_key = clean_label(Location),
-    function_key = clean_label(Function.Type),
+    Study.ID = row_number(),
     
-    Location = case_when(
-      location_key == "in situ" ~ "In-situ",
-      location_key == "ex situ" ~ "Ex-situ",
-      location_key %in% c(
-        "both", "in situ + ex situ", "in situ+ex situ",
-        "in situ and ex situ", "in situ ex situ"
-      ) ~ "In-situ + Ex-situ",
-      location_key == "in silico" ~ "In-silico",
+    Article.Title = str_squish(
+      as.character(Article.Title)
+    ),
+    
+    across(
+      all_of(names(category_labels)),
+      ~ as.integer(trimws(as.character(.x)))
+    ),
+    
+    Year = as.integer(as.character(Publication.Year)),
+    
+    Year.Bin = cut(
+      Year,
+      breaks = c(1987, 2000, 2013, 2027),
+      labels = bin_labels,
+      right = FALSE
+    ),
+    
+    Function.Key = clean_label(Function.Type),
+    
+    Function = case_when(
+      Function.Key == "realized function" ~
+        "Realized Function",
+      Function.Key == "functional potential" ~
+        "Functional Potential",
       TRUE ~ NA_character_
     ),
     
-    Function = case_when(
-      function_key == "functional potential" ~ "Functional potential",
-      function_key == "realized function" ~ "Realized function",
+    Location.Raw = as.character(Location),
+    Location.Key = clean_label(Location.Raw),
+    
+    # Both and In-silico records are excluded from this figure.
+    Location = case_when(
+      Location.Key == "in situ" ~ "In-situ",
+      Location.Key == "ex situ" ~ "Ex-situ",
       TRUE ~ NA_character_
+    ),
+    
+    Myco.Key = tolower(
+      coalesce(as.character(Mycorrhizal.Type), "")
+    ),
+    
+    `AM Fungi` = grepl(
+      "(^|[^a-z])am([^a-z]|$)",
+      Myco.Key
+    ),
+    
+    `EcM Fungi` = grepl(
+      "(^|[^a-z])ecm([^a-z]|$)",
+      Myco.Key
     )
   )
 
-# Check for values that were not recognized
-study_data %>%
-  filter(is.na(Location) | is.na(Function)) %>%
-  distinct(location_key, function_key)
+# --------------------------------------------------
+# 3. Prepare study × category × fungal-group data
+# --------------------------------------------------
 
-# One row per study × topic
-topic_data <- study_data %>%
+line_data <- study_data %>%
+  filter(
+    !is.na(Year.Bin),
+    Function %in% function_levels,
+    Location %in% location_levels
+  ) %>%
   pivot_longer(
     cols = all_of(names(category_labels)),
     names_to = "Category",
     values_to = "Present"
   ) %>%
-  filter(as.character(Present) == "1") %>%
+  filter(Present == 1L) %>%
+  pivot_longer(
+    cols = all_of(fungal_levels),
+    names_to = "Fungal.Group",
+    values_to = "Included"
+  ) %>%
+  filter(Included) %>%
   mutate(
     Category = factor(
       Category,
       levels = names(category_labels),
       labels = category_levels
+    ),
+    
+    Fungal.Group = factor(
+      Fungal.Group,
+      levels = fungal_levels
+    ),
+    
+    Function = factor(
+      Function,
+      levels = function_levels
+    ),
+    
+    Location = factor(
+      Location,
+      levels = location_levels
     )
   )
-### 2nd Step
-function_counts <- topic_data %>%
-  filter(!is.na(Function)) %>%
-  count(Category, Function, name = "Studies") %>%
+
+# --------------------------------------------------
+# 4. Count studies and complete absent combinations
+# --------------------------------------------------
+
+# Retains the original row-based Study.ID counting.
+line_counts <- line_data %>%
+  distinct(
+    Study.ID,
+    Category,
+    Fungal.Group,
+    Function,
+    Location,
+    Year.Bin
+  ) %>%
+  dplyr::count(
+    Category,
+    Fungal.Group,
+    Function,
+    Location,
+    Year.Bin,
+    name = "Studies"
+  ) %>%
   complete(
     Category,
-    Function = function_levels,
-    fill = list(Studies = 0)
+    Fungal.Group,
+    Function,
+    Location,
+    Year.Bin,
+    fill = list(Studies = 0L)
   ) %>%
-  mutate(Function = factor(Function, levels = function_levels))
-
-# Table of values to insert into your schematic
-count_table <- function_counts %>%
-  pivot_wider(
-    names_from = Function,
-    values_from = Studies
+  mutate(
+    Line.ID = interaction(
+      Category,
+      Fungal.Group,
+      Function,
+      Location,
+      drop = TRUE
+    )
+  ) %>%
+  arrange(
+    Category,
+    Fungal.Group,
+    Location,
+    Function,
+    Year.Bin
   )
 
-count_table
+# --------------------------------------------------
+# 5. Trend plot
+# --------------------------------------------------
 
-### 3rd Step
-year_range <- seq(
-  min(study_data$Year, na.rm = TRUE),
-  max(study_data$Year, na.rm = TRUE)
-)
-
-annual_counts <- topic_data %>%
-  filter(!is.na(Year), !is.na(Location)) %>%
-  count(Category, Year, Location, name = "Studies") %>%
-  complete(
-    Category,
-    Year = year_range,
-    Location = location_levels,
-    fill = list(Studies = 0)
-  ) %>%
-  mutate(Location = factor(Location, levels = location_levels))
-
-### 4th Step
-
-p_counts <- ggplot(
-  function_counts,
-  aes(x = Function, y = 1, label = paste0("n = ", Studies))
+p_fungal_trends <- ggplot(
+  line_counts,
+  aes(
+    x = Year.Bin,
+    y = Studies,
+    color = Location,
+    linetype = Function,
+    group = Line.ID
+  )
 ) +
-  geom_text(size = 4.5, family = "serif") +
-  facet_grid(Category ~ ., switch = "y") +
-  scale_x_discrete(
-    position = "top",
-    labels = c(
-      "Functional potential" = "Functional\nPotential",
-      "Realized function" = "Realized\nFunction"
+  geom_line(
+    linewidth = 0.8,
+    show.legend = c(colour = TRUE, linetype = TRUE)
+  ) +
+  geom_point(
+    aes(shape = Location),
+    size = 2,
+    show.legend = c(
+      colour = TRUE,
+      shape = TRUE,
+      linetype = FALSE
     )
   ) +
-  labs(x = NULL, y = NULL) +
-  theme_minimal(base_size = 12) +
-  theme(
-    panel.grid = element_blank(),
-    axis.text.y = element_blank(),
-    axis.text.x = element_text(face = "bold", color = "black"),
-    strip.placement = "outside",
-    strip.text.y.left = element_text(
-      angle = 0, hjust = 0, face = "bold"
-    ),
-    panel.spacing.y = grid::unit(0.8, "lines")
-  )
-
-# Divide the observed year range into three approximately equal bins
-year_min <- min(study_data$Year, na.rm = TRUE)
-year_max <- max(study_data$Year, na.rm = TRUE)
-
-bin_edges <- floor(seq(year_min, year_max + 1, length.out = 4))
-
-bin_labels <- paste0(
-  bin_edges[1:3], "–", bin_edges[2:4] - 1
-)
-
-binned_counts <- topic_data %>%
-  filter(!is.na(Year), !is.na(Location)) %>%
-  mutate(
-    YearBin = cut(
-      Year,
-      breaks = bin_edges,
-      labels = bin_labels,
-      right = FALSE,
-      include.lowest = TRUE
-    )
-  ) %>%
-  count(Category, YearBin, Location, name = "Studies") %>%
-  complete(
-    Category,
-    YearBin = factor(bin_labels, levels = bin_labels),
-    Location = location_levels,
-    fill = list(Studies = 0)
-  ) %>%
-  mutate(Location = factor(Location, levels = location_levels))
-
-# Distinct colors, reinforced by line types and shapes
-location_colors <- c(
-  "In-situ"           = "darkgreen",  
-  "Ex-situ"           = "gray",  
-  "In-situ + Ex-situ" = "#C49A45",  
-  "In-silico"         = "#8A6F91"
-)
-
-p_time <- ggplot(
-  binned_counts,
-  aes(
-    x = YearBin,
-    y = Studies,
-    group = Location,
-    color = Location,
-    linetype = Location,
-    shape = Location
-  )
-) +
-  geom_line(linewidth = 0.9) +
-  geom_point(size = 2.7) +
-  facet_grid(Category ~ .) +
-  scale_color_manual(values = location_colors, drop = FALSE) +
-  scale_linetype_manual(
-    values = c("solid", "dashed", "dotdash", "dotted"),
+  facet_grid(
+    Category ~ Fungal.Group,
+    switch = "y",
+    drop = FALSE
+  ) +
+  scale_color_manual(
+    name = "Location",
+    values = location_colors,
+    breaks = location_levels,
+    na.translate = FALSE,
     drop = FALSE
   ) +
   scale_shape_manual(
-    values = c(16, 17, 15, 18),
+    name = "Location",
+    values = location_shapes,
+    breaks = location_levels,
+    na.translate = FALSE,
     drop = FALSE
   ) +
+  scale_linetype_manual(
+    name = "Function Type",
+    values = c(
+      "Realized Function" = "solid",
+      "Functional Potential" = "dashed"
+    ),
+    breaks = function_levels,
+    na.translate = FALSE,
+    drop = FALSE
+  ) +
+  scale_x_discrete(drop = FALSE) +
   scale_y_continuous(
-    breaks = scales::breaks_pretty(n = 3),
     limits = c(0, NA),
-    expand = expansion(mult = c(0, 0.08))
+    breaks = function(limits) {
+      ticks <- pretty(limits, n = 3)
+      ticks[ticks >= 0 & ticks == floor(ticks)]
+    },
+    minor_breaks = NULL,
+    expand = expansion(mult = c(0.03, 0.10))
   ) +
   labs(
-    x = "Publication Year",
-    y = "Number of Studies",
-    color = NULL,
-    linetype = NULL,
-    shape = NULL
+    x = NULL,
+    y = NULL
   ) +
   guides(
-    color = guide_legend(ncol = 2, byrow = TRUE),
-    linetype = guide_legend(ncol = 2, byrow = TRUE),
-    shape = guide_legend(ncol = 2, byrow = TRUE)
+    linetype = guide_legend(
+      order = 1,
+      nrow = 1,
+      override.aes = list(
+        colour = "black",
+        shape = NA
+      )
+    ),
+    color = guide_legend(
+      order = 2,
+      nrow = 1,
+      override.aes = list(
+        linetype = "solid",
+        size = 2.5
+      )
+    ),
+    shape = guide_legend(
+      order = 2,
+      nrow = 1
+    )
   ) +
-  theme_bw(base_size = 12) +
+  theme_bw(base_size = 11) +
   theme(
-    strip.background = element_blank(),
-    strip.text = element_blank(),
+    panel.grid.minor = element_blank(),
+    
+    strip.background = element_rect(
+      fill = "gray95",
+      color = "gray20"
+    ),
+    
+    strip.text.x = element_text(face = "bold"),
+    
+    strip.text.y.left = element_text(
+      angle = 0,
+      face = "bold",
+      hjust = 1
+    ),
+    
+    strip.placement.x = "inside",
+    strip.placement.y = "outside",
+    
+    panel.spacing = grid::unit(0.7, "lines"),
+    
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      vjust = 1
+    ),
+    
     legend.position = "bottom",
-    panel.spacing.y = grid::unit(0.8, "lines")
+    legend.box = "vertical",
+    legend.key.width = grid::unit(1.5, "cm")
   )
 
-# Rebuild the combined figure
-combined <- (p_counts | p_time) +
-  plot_layout(widths = c(1.4, 2)) +
+# --------------------------------------------------
+# 6. Manipulation proportions
+# --------------------------------------------------
+
+# Use the same eligible records as the trend panels.
+# Pool AM and EcM, counting each article once per category.
+manip_source <- line_data %>%
+  transmute(
+    Article.Title,
+    Category,
+    Broad.Manipulation.Type =
+      as.character(Broad.Manipulation.Type)
+  ) %>%
+  filter(
+    !is.na(Article.Title),
+    Article.Title != ""
+  ) %>%
+  distinct()
+
+manip_denominators <- manip_source %>%
+  distinct(Article.Title, Category) %>%
+  dplyr::count(
+    Category,
+    name = "Total.Studies"
+  )
+
+manip_studies <- manip_source %>%
+  separate_longer_delim(
+    cols = Broad.Manipulation.Type,
+    delim = ";"
+  ) %>%
+  mutate(
+    Broad.Manipulation.Type =
+      str_squish(Broad.Manipulation.Type)
+  ) %>%
+  distinct(
+    Article.Title,
+    Category,
+    Broad.Manipulation.Type
+  )
+
+invalid_labels <- manip_studies %>%
+  filter(
+    is.na(Broad.Manipulation.Type) |
+      !Broad.Manipulation.Type %in% manipulation_levels
+  )
+
+if (nrow(invalid_labels) > 0L) {
+  print(invalid_labels)
+  
+  stop(
+    "Some manipulation labels are missing or unrecognized. ",
+    "Inspect invalid_labels before continuing."
+  )
+}
+
+manip_counts <- manip_studies %>%
+  dplyr::count(
+    Category,
+    Broad.Manipulation.Type,
+    name = "Studies"
+  ) %>%
+  complete(
+    Category,
+    Broad.Manipulation.Type = manipulation_levels,
+    fill = list(Studies = 0L)
+  ) %>%
+  left_join(
+    manip_denominators,
+    by = "Category"
+  ) %>%
+  mutate(
+    Total.Studies = coalesce(Total.Studies, 0L),
+    
+    Proportion = Studies / na_if(Total.Studies, 0L),
+    
+    Category = factor(
+      Category,
+      levels = category_levels
+    ),
+    
+    Broad.Manipulation.Type = factor(
+      Broad.Manipulation.Type,
+      levels = rev(manipulation_levels)
+    ),
+    
+    Summary = factor(
+      "Manipulation Types",
+      levels = "Manipulation Types"
+    )
+  )
+
+# --------------------------------------------------
+# 7. Black manipulation bars
+# --------------------------------------------------
+
+p_manipulation_category <- ggplot(
+  manip_counts,
+  aes(
+    x = Proportion,
+    y = Broad.Manipulation.Type
+  )
+) +
+  geom_col(
+    fill = "black",
+    width = 0.65,
+    na.rm = TRUE
+  ) +
+  geom_text(
+    aes(
+      label = scales::percent(
+        Proportion,
+        accuracy = 1
+      )
+    ),
+    hjust = -0.15,
+    size = 2.6,
+    na.rm = TRUE
+  ) +
+  facet_grid(
+    Category ~ Summary,
+    switch = "y",
+    drop = FALSE
+  ) +
+  scale_y_discrete(
+    labels = c(
+      "Plant manipulations" = "Plant",
+      "Fungal manipulations/isolations" = "Fungal",
+      "Environmental manipulations" = "Environment",
+      "Surveys" = "Survey"
+    ),
+    drop = FALSE
+  ) +
+  scale_x_continuous(
+    limits = c(0, 1),
+    breaks = NULL,
+    expand = expansion(mult = c(0, 0.22))
+  ) +
+  labs(
+    x = NULL,
+    y = NULL
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    
+    strip.background = element_rect(
+      fill = "gray95",
+      color = "gray20"
+    ),
+    
+    strip.text.x = element_text(face = "bold"),
+    strip.text.y = element_blank(),
+    strip.background.y = element_blank(),
+    strip.placement.x = "inside",
+    
+    panel.spacing = grid::unit(0.7, "lines"),
+    
+    axis.text.y = element_text(size = 8),
+    axis.ticks.y = element_blank(),
+    
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.x = element_blank(),
+    
+    legend.position = "none"
+  )
+
+# --------------------------------------------------
+# 8. Combine plots
+# --------------------------------------------------
+
+p_combined <- (
+  p_fungal_trends | p_manipulation_category
+) +
+  plot_layout(
+    widths = c(2, 0.7),
+    guides = "collect"
+  ) +
   plot_annotation(
-    title = "Mapping Mycorrhizal Function Research"
+    caption = paste(
+      "Only AM and EcM studies classified as In-situ or Ex-situ are shown.",
+      "\nManipulation bars summarize unique studies within each category,",
+      "pooled across AM and EcM.",
+      "\nStudies may contribute to multiple manipulation types;",
+      "percentages may sum to more than 100%."
+    ),
+    theme = theme(
+      plot.caption = element_text(
+        hjust = 0,
+        size = 8
+      )
+    )
   )
 
-combined
+p_combined <- p_combined &
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical"
+  )
+
+p_combined
+
+# Underlying manipulation summary
+manip_counts
+
+# --------------------------------------------------
+# 9. Save the combined figure
+# --------------------------------------------------
 
 ggsave(
-  "Fig1_combined.png",
-  plot = combined,
-  width = 7,
-  height = 5,
+  "Fig1_AM_EcM_Insitu_Exsitu_Combined.png",
+  plot = p_combined,
+  width = 9,
+  height = 8,
   units = "in",
   dpi = 600,
   bg = "white"
 )
+
+# ---------------------------------------------------
+# Summary Table
+# ---------------------------------------------------
+
+library(readr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+
+# ---------------------------------------------------
+# 1. Read included studies
+# ---------------------------------------------------
+
+sub_tab <- read_csv(
+  "NP.Data.TEMP.Broad.Manipulation.Type.Revised+LB+YL.csv",
+  show_col_types = FALSE
+) %>%
+  filter(Inclusion != "No")
+
+# Accommodate either hyphosphere spelling.
+interaction_col <- intersect(
+  c(
+    "Hyphosphere.Interactions",
+    "Hyposphere.Interactions"
+  ),
+  names(sub_tab)
+)
+
+stopifnot(length(interaction_col) == 1L)
+
+categories <- c(
+  "Resource.Transfer",
+  "Life.History",
+  interaction_col,
+  "Soil.Carbon.Dynamics",
+  "Non.Resource.Interactions"
+)
+
+# Standardize punctuation, capitalization, and spacing.
+key <- function(x) {
+  str_remove_all(
+    str_to_lower(as.character(x)),
+    "[^a-z0-9]"
+  )
+}
+
+# ---------------------------------------------------
+# 2. Standardize data
+# ---------------------------------------------------
+
+dat <- sub_tab %>%
+  mutate(
+    study = str_squish(as.character(Article.Title)),
+    
+    myc_key = str_to_lower(
+      str_squish(as.character(Mycorrhizal.Type))
+    ),
+    
+    location_key = key(Location),
+    function_key = key(Function.Type),
+    
+    # Ensure category columns have compatible types.
+    across(
+      all_of(categories),
+      ~ as.integer(str_trim(as.character(.x)))
+    )
+  ) %>%
+  filter(
+    !is.na(study),
+    study != ""
+  )
+
+# Overall unique studies, counting duplicated SPLIT entries once.
+total_studies <- dat %>%
+  summarise(
+    Unique.Studies = n_distinct(study)
+  )
+
+# ---------------------------------------------------
+# 3. Assign mycorrhizal groups
+# ---------------------------------------------------
+
+# Match AM and EcM as separate abbreviations.
+# Studies containing both abbreviations enter both groups.
+dat <- dat %>%
+  mutate(
+    EcM = coalesce(
+      str_detect(
+        myc_key,
+        "(^|[^a-z])ecm([^a-z]|$)"
+      ),
+      FALSE
+    ),
+    
+    AM = coalesce(
+      str_detect(
+        myc_key,
+        "(^|[^a-z])am([^a-z]|$)"
+      ),
+      FALSE
+    ),
+    
+    Unknown = is.na(myc_key) | myc_key == "",
+    
+    Others = !Unknown & !EcM & !AM
+  )
+
+myc_rows <- bind_rows(
+  dat %>%
+    mutate(
+      Mycorrhizal.Group = "All studies"
+    ),
+  
+  dat %>%
+    pivot_longer(
+      cols = c(EcM, AM, Others, Unknown),
+      names_to = "Mycorrhizal.Group",
+      values_to = "present"
+    ) %>%
+    filter(present) %>%
+    dplyr::select(-present)
+)
+
+# ---------------------------------------------------
+# 4. Expand research categories
+# ---------------------------------------------------
+
+category_rows <- bind_rows(
+  myc_rows %>%
+    mutate(
+      Category = "All categories"
+    ),
+  
+  myc_rows %>%
+    pivot_longer(
+      cols = all_of(categories),
+      names_to = "Category",
+      values_to = "present"
+    ) %>%
+    filter(present == 1L) %>%
+    dplyr::select(-present)
+)
+
+# ---------------------------------------------------
+# 5. Expand function groups
+# ---------------------------------------------------
+
+# Preserve each function assignment on its original row.
+function_base <- category_rows %>%
+  mutate(
+    Function.Group = case_when(
+      function_key == "realizedfunction" ~
+        "Realized.Function",
+      
+      function_key == "functionalpotential" ~
+        "Functional.Potential",
+      
+      TRUE ~ "Other/unknown"
+    )
+  )
+
+function_rows <- bind_rows(
+  function_base,
+  
+  function_base %>%
+    mutate(
+      Function.Group = "All function types"
+    )
+)
+
+# ---------------------------------------------------
+# 6. Expand location groups
+# ---------------------------------------------------
+
+# In.situ and Ex.situ are inclusive:
+# a record coded Both enters both location columns.
+#
+# Both requires BOTH flags, rather than either flag.
+
+location_rows <- function_rows %>%
+  mutate(
+    in_situ = coalesce(
+      str_detect(
+        location_key,
+        fixed("insitu")
+      ) |
+        location_key == "both",
+      FALSE
+    ),
+    
+    ex_situ = coalesce(
+      str_detect(
+        location_key,
+        fixed("exsitu")
+      ) |
+        location_key == "both",
+      FALSE
+    ),
+    
+    in_silico = coalesce(
+      str_detect(
+        location_key,
+        fixed("insilico")
+      ),
+      FALSE
+    ),
+    
+    `All locations` = TRUE,
+    
+    In.situ = in_situ,
+    Ex.situ = ex_situ,
+    
+    # Corrected: intersection, not union.
+    Both = in_situ & ex_situ,
+    
+    In.silico = in_silico
+  ) %>%
+  pivot_longer(
+    cols = c(
+      `All locations`,
+      In.situ,
+      Ex.situ,
+      Both,
+      In.silico
+    ),
+    names_to = "Study.Location",
+    values_to = "include_location"
+  ) %>%
+  filter(include_location)
+
+# ---------------------------------------------------
+# 7. Count unique studies
+# ---------------------------------------------------
+
+summary_table <- location_rows %>%
+  group_by(
+    Mycorrhizal.Group,
+    Category,
+    Function.Group,
+    Study.Location
+  ) %>%
+  summarise(
+    Studies = n_distinct(study),
+    .groups = "drop"
+  ) %>%
+  complete(
+    Mycorrhizal.Group,
+    Category,
+    Function.Group,
+    
+    Study.Location = c(
+      "All locations",
+      "In.situ",
+      "Ex.situ",
+      "Both",
+      "In.silico"
+    ),
+    
+    fill = list(
+      Studies = 0L
+    )
+  ) %>%
+  pivot_wider(
+    names_from = Study.Location,
+    values_from = Studies,
+    values_fill = 0L
+  ) %>%
+  dplyr::select(
+    Mycorrhizal.Group,
+    Category,
+    Function.Group,
+    `All locations`,
+    In.situ,
+    Ex.situ,
+    Both,
+    In.silico
+  ) %>%
+  arrange(
+    Mycorrhizal.Group,
+    Category,
+    Function.Group
+  )
+
+# ---------------------------------------------------
+# 8. Verify location counts
+# ---------------------------------------------------
+
+# Both cannot exceed either inclusive location count.
+stopifnot(
+  all(summary_table$Both <= summary_table$In.situ),
+  all(summary_table$Both <= summary_table$Ex.situ)
+)
+
+# ---------------------------------------------------
+# 9. Display results
+# ---------------------------------------------------
+
+print(total_studies)
+
+print(
+  summary_table,
+  n = Inf
+)
+
+# Overall counts across all categories and function types.
+overall_location_counts <- summary_table %>%
+  filter(
+    Mycorrhizal.Group == "All studies",
+    Category == "All categories",
+    Function.Group == "All function types"
+  )
+
+print(overall_location_counts)
+
+# ---------------------------------------------------
+# 10. Export without sequential row numbers
+# ---------------------------------------------------
+
+write_csv(
+  summary_table,
+  "Summary.Table.NP.Data.11.02.2026.Corrected.csv"
+)
+
+
