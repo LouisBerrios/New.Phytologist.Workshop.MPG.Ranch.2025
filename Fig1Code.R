@@ -1369,4 +1369,112 @@ write_csv(
   "Summary.Table.NP.Data.11.02.2026.Corrected.csv"
 )
 
+#----------------------------------------------------
+# No. of studies per mycorrhizal type
+#----------------------------------------------------
+
+library(dplyr)
+library(tidyr)
+library(stringr)
+
+# --------------------------------------------------
+# Prepare study identities and mycorrhizal groups
+# --------------------------------------------------
+
+myco_studies <- MF2 %>%
+  mutate(
+    study = str_squish(as.character(Article.Title)),
+    
+    myco = str_to_lower(
+      coalesce(as.character(Mycorrhizal.Type), "")
+    ),
+    
+    AM = str_detect(
+      myco,
+      "\\bam\\b|arbuscular"
+    ),
+    
+    EcM = str_detect(
+      myco,
+      "\\becm\\b|ectomycorrhiz"
+    ),
+    
+    ErM = str_detect(
+      myco,
+      "\\berm\\b|ericoid"
+    ),
+    
+    Orchid = str_detect(
+      myco,
+      "orchid|\\borm\\b"
+    ),
+    
+    MFRE = str_detect(
+      myco,
+      "\\bmfre\\b|mucoromycotinian|fine root endophy"
+    )
+  ) %>%
+  filter(
+    !is.na(study),
+    study != ""
+  )
+
+# Calculate the denominator from the data.
+total_unique <- n_distinct(myco_studies$study)
+
+# --------------------------------------------------
+# Count unique studies within each group
+# --------------------------------------------------
+
+myco_table <- myco_studies %>%
+  pivot_longer(
+    cols = c(AM, EcM, ErM, Orchid, MFRE),
+    names_to = "Mycorrhizal.Group",
+    values_to = "Included"
+  ) %>%
+  filter(Included) %>%
+  distinct(study, Mycorrhizal.Group) %>%
+  dplyr::count(
+    Mycorrhizal.Group,
+    name = "Unique.Studies"
+  ) %>%
+  complete(
+    Mycorrhizal.Group = c(
+      "AM", "EcM", "ErM", "Orchid", "MFRE"
+    ),
+    fill = list(Unique.Studies = 0L)
+  ) %>%
+  mutate(
+    Percentage = round(
+      100 * Unique.Studies / total_unique,
+      digits = 1
+    ),
+    
+    Mycorrhizal.Group = factor(
+      Mycorrhizal.Group,
+      levels = c(
+        "AM", "EcM", "ErM", "Orchid", "MFRE"
+      )
+    )
+  ) %>%
+  arrange(Mycorrhizal.Group) %>%
+  mutate(
+    Mycorrhizal.Group = as.character(Mycorrhizal.Group)
+  ) %>%
+  bind_rows(
+    tibble(
+      Mycorrhizal.Group = "All unique studies",
+      Unique.Studies = total_unique,
+      Percentage = 100
+    )
+  )
+
+print(myco_table)
+
+# Export without sequential row numbers.
+write.csv(
+  myco_table,
+  "Mycorrhizal_Group_Study_Counts.csv",
+  row.names = FALSE
+)
 
